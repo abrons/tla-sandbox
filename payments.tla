@@ -38,46 +38,46 @@ Syncers == {<<"sync", dc>> : dc \in Datacenters}
 variables
   \* DATACENTER LOCAL VARIABLES
   \* These are shared between a server and a syncer in the same DC
-  
+
   \* Local database
   db        = [dc \in Datacenters |-> <<>>],
   \* Messages from the client
   msgs      = [dc \in Datacenters |-> <<>>],
   \* Broadcast messages from other DCs
   broadcast = [dc \in Datacenters |-> <<>>],
-  
+
   \* PROCESSOR VARIABLES
   auths    = {},
   captures = {},
-  
+
   \* Whether or not a successful response has been returned to the client
   \* This isn't really necessary with the current assumptions, but makes invariants clearer.
   Success = FALSE
   ;
-  
+
 \* INVARIANTS AND TEMPORAL PROPERTIES
 define
-  
+
   \* Double capturing is bad under any circumstances, because it could cause overdrafts.
   NoDoubleCapture == Cardinality(captures) <= 1
-  
+
   \* If we auth something, ensure that we eventually capture it. (This model doesn't
   \* handle client voids or refunds, which would complicated this)
   EventualCapture == Success ~> <>(Cardinality(captures) = 1)
-  
+
   \* Not technically required since auths expire, but for user friendliness we
   \* explicitly void any redundant auths.
   VoidRedundantAuths == Success ~> <>(Cardinality(auths) = 1)
-  
+
   \* A client must never send an auth with the same ID to more than one DC
   DistinctIds == \A dc1 \in Datacenters, dc2 \in Datacenters :
-       dc1 = dc2 
+       dc1 = dc2
     \/ Len(SelectSeq(msgs[dc1], LAMBDA x1 : Len(SelectSeq(msgs[dc2], LAMBDA x2 : x1.id = x2.id)) > 0)) = 0
-  
-  
+
+
   \* Helper function
-  Min(S) == CHOOSE x \in S: 
-            \A y \in S \ {x}: 
+  Min(S) == CHOOSE x \in S:
+            \A y \in S \ {x}:
               y > x
 end define;
 
@@ -88,11 +88,11 @@ variables
   id = 1,
   token = "abc",
   homedc = Min(Datacenters),
-  others = Datacenters \ {homedc}; 
+  others = Datacenters \ {homedc};
 begin InitialAuth:
   msgs[homedc] := Append(msgs[homedc], [id |-> id, token |-> token, home |-> {homedc}]);
   id := id + 1;
-  
+
   RetryLoop:
   while others /= {} /\ ~Success do
     Retry:
@@ -110,7 +110,7 @@ variables
 begin ServerStart:
     while TRUE do
       await Len(msgs[serverid]) > 0;
-      
+
       HandleRequest:
       with local = Head(msgs[serverid]) do
           \* If we already have an auth for this token, then ignore
@@ -119,17 +119,17 @@ begin ServerStart:
           else
               \* Auth it!
               auths := auths \union {local};
-              
+
               if serverid \in local.home then
                 \* We own this auth, so capture it!
                 captures := captures \union {local};
               else
                 skip;
               end if;
-              
+
               \* Store locally (Only actually needed for this proof if home DC)
               db[serverid] := Append(db[serverid], local);
-              
+
               \* Broadcast msg to home DCs (excluding self)
               broadcast := [dc \in Datacenters |->
                   IF dc \in local.home /\ dc /= serverid
@@ -137,14 +137,14 @@ begin ServerStart:
                   ELSE broadcast[dc]
               ];
           end if;
-          
-          msgs[serverid] := Tail(msgs[serverid]);     
+
+          msgs[serverid] := Tail(msgs[serverid]);
       end with;
-           
+
       \* Tell client we succeeded
       \* TODO: How to simulate response being dropped? Adding an either here or a label collapses model to a single state...
       Success := TRUE;
-      
+
     end while;
 end process;
 
@@ -165,9 +165,9 @@ begin SyncStart:
             db[serverid] := Append(db[serverid], local);
             captures := captures \union {local};
           end if;
-          
-          broadcast[serverid] := Tail(broadcast[serverid]); 
-        end with;   
+
+          broadcast[serverid] := Tail(broadcast[serverid]);
+        end with;
   end while;
 end process;
 
@@ -200,7 +200,7 @@ Min(S) == CHOOSE x \in S:
 
 VARIABLES id, token, homedc, others, serverid_, serverid
 
-vars == << db, msgs, broadcast, auths, captures, Success, pc, id, token, 
+vars == << db, msgs, broadcast, auths, captures, Success, pc, id, token,
            homedc, others, serverid_, serverid >>
 
 ProcSet == {<<"client", 1>>} \cup (Servers) \cup (Syncers)
@@ -229,14 +229,14 @@ InitialAuth == /\ pc[<<"client", 1>>] = "InitialAuth"
                /\ msgs' = [msgs EXCEPT ![homedc] = Append(msgs[homedc], [id |-> id, token |-> token, home |-> {homedc}])]
                /\ id' = id + 1
                /\ pc' = [pc EXCEPT ![<<"client", 1>>] = "RetryLoop"]
-               /\ UNCHANGED << db, broadcast, auths, captures, Success, token, 
+               /\ UNCHANGED << db, broadcast, auths, captures, Success, token,
                                homedc, others, serverid_, serverid >>
 
 RetryLoop == /\ pc[<<"client", 1>>] = "RetryLoop"
              /\ IF others /= {} /\ ~Success
                    THEN /\ pc' = [pc EXCEPT ![<<"client", 1>>] = "Retry"]
                    ELSE /\ pc' = [pc EXCEPT ![<<"client", 1>>] = "Done"]
-             /\ UNCHANGED << db, msgs, broadcast, auths, captures, Success, id, 
+             /\ UNCHANGED << db, msgs, broadcast, auths, captures, Success, id,
                              token, homedc, others, serverid_, serverid >>
 
 Retry == /\ pc[<<"client", 1>>] = "Retry"
@@ -245,7 +245,7 @@ Retry == /\ pc[<<"client", 1>>] = "Retry"
               /\ id' = id + 1
               /\ others' = others \ {nextdc}
          /\ pc' = [pc EXCEPT ![<<"client", 1>>] = "RetryLoop"]
-         /\ UNCHANGED << db, broadcast, auths, captures, Success, token, 
+         /\ UNCHANGED << db, broadcast, auths, captures, Success, token,
                          homedc, serverid_, serverid >>
 
 client == InitialAuth \/ RetryLoop \/ Retry
@@ -253,15 +253,15 @@ client == InitialAuth \/ RetryLoop \/ Retry
 ServerStart(self) == /\ pc[self] = "ServerStart"
                      /\ Len(msgs[serverid_[self]]) > 0
                      /\ pc' = [pc EXCEPT ![self] = "HandleRequest"]
-                     /\ UNCHANGED << db, msgs, broadcast, auths, captures, 
-                                     Success, id, token, homedc, others, 
+                     /\ UNCHANGED << db, msgs, broadcast, auths, captures,
+                                     Success, id, token, homedc, others,
                                      serverid_, serverid >>
 
 HandleRequest(self) == /\ pc[self] = "HandleRequest"
                        /\ LET local == Head(msgs[serverid_[self]]) IN
                             /\ IF Len(SelectSeq(db[serverid_[self]], LAMBDA x : x.token = local.token)) > 0
                                   THEN /\ TRUE
-                                       /\ UNCHANGED << db, broadcast, auths, 
+                                       /\ UNCHANGED << db, broadcast, auths,
                                                        captures >>
                                   ELSE /\ auths' = (auths \union {local})
                                        /\ IF serverid_[self] \in local.home
@@ -277,7 +277,7 @@ HandleRequest(self) == /\ pc[self] = "HandleRequest"
                             /\ msgs' = [msgs EXCEPT ![serverid_[self]] = Tail(msgs[serverid_[self]])]
                        /\ Success' = TRUE
                        /\ pc' = [pc EXCEPT ![self] = "ServerStart"]
-                       /\ UNCHANGED << id, token, homedc, others, serverid_, 
+                       /\ UNCHANGED << id, token, homedc, others, serverid_,
                                        serverid >>
 
 server(self) == ServerStart(self) \/ HandleRequest(self)
@@ -285,8 +285,8 @@ server(self) == ServerStart(self) \/ HandleRequest(self)
 SyncStart(self) == /\ pc[self] = "SyncStart"
                    /\ Len(broadcast[serverid[self]]) > 0
                    /\ pc' = [pc EXCEPT ![self] = "SyncStep"]
-                   /\ UNCHANGED << db, msgs, broadcast, auths, captures, 
-                                   Success, id, token, homedc, others, 
+                   /\ UNCHANGED << db, msgs, broadcast, auths, captures,
+                                   Success, id, token, homedc, others,
                                    serverid_, serverid >>
 
 SyncStep(self) == /\ pc[self] = "SyncStep"
@@ -299,7 +299,7 @@ SyncStep(self) == /\ pc[self] = "SyncStep"
                                   /\ auths' = auths
                        /\ broadcast' = [broadcast EXCEPT ![serverid[self]] = Tail(broadcast[serverid[self]])]
                   /\ pc' = [pc EXCEPT ![self] = "SyncStart"]
-                  /\ UNCHANGED << msgs, Success, id, token, homedc, others, 
+                  /\ UNCHANGED << msgs, Success, id, token, homedc, others,
                                   serverid_, serverid >>
 
 syncer(self) == SyncStart(self) \/ SyncStep(self)
