@@ -8,59 +8,94 @@ Syncers == {<<"sync1", 1>>, <<"sync2", 2>>}
 
 (*--algorithm payments
 variables
-  db = [s \in {s[2] : s \in Servers} |-> {}],
-  broadcast = {};
+  dcs = {s[2] : s \in Servers},
+  db = [dc \in dcs |-> <<>>],
+  broadcast = [dc \in dcs |-> <<>>];
   
 define
-  SomeInvariant == <>(\A x \in Servers : db[x[2]] = Servers)
+  \* SomeInvariant == <>(\A x \in Servers : db[x[2]] = Servers)
+  SomeInvariant == <>(db = [dc \in dcs |-> <<{3}>>])
+  
+  \* SomeInvariant == <>(db = [dc \in dcs |-> <<>>])
 end define;
 
 fair process server \in Servers
+variables
+  serverid = self[2],
+  others = dcs \ {serverid};
 begin ServerStart:
-  broadcast := broadcast \union {self}
+  broadcast := [dc \in dcs |->
+    IF dc = serverid
+    THEN broadcast[dc]
+    ELSE Append(broadcast[dc], {3})
+  ]
 end process;
 
 fair process syncer \in Syncers
+variables
+  local = {},
+  serverid = self[2];
 begin SyncStart:
   while TRUE do
+    await Len(broadcast[serverid]) > 0;
     SyncStep:
-    db[self[2]] := db[self[2]] \union broadcast
+        local := Head(broadcast[serverid]);
+        broadcast[serverid] := Tail(broadcast[serverid]);
+        db[serverid] := Append(db[serverid], local);
   end while;
 end process;
 
 end algorithm--*)
 \* BEGIN TRANSLATION
-VARIABLES db, broadcast, pc
+\* Process variable serverid of process server at line 24 col 3 changed to serverid_
+VARIABLES dcs, db, broadcast, pc
 
 (* define statement *)
-SomeInvariant == <>(\A x \in Servers : db[x[2]] = Servers)
+SomeInvariant == <>(db = [dc \in dcs |-> <<{3}>>])
 
+VARIABLES serverid_, others, local, serverid
 
-vars == << db, broadcast, pc >>
+vars == << dcs, db, broadcast, pc, serverid_, others, local, serverid >>
 
 ProcSet == (Servers) \cup (Syncers)
 
 Init == (* Global variables *)
-        /\ db = [s \in {s[2] : s \in Servers} |-> {}]
-        /\ broadcast = {}
+        /\ dcs = {s[2] : s \in Servers}
+        /\ db = [dc \in dcs |-> <<>>]
+        /\ broadcast = [dc \in dcs |-> <<>>]
+        (* Process server *)
+        /\ serverid_ = [self \in Servers |-> self[2]]
+        /\ others = [self \in Servers |-> dcs \ {serverid_[self]}]
+        (* Process syncer *)
+        /\ local = [self \in Syncers |-> {}]
+        /\ serverid = [self \in Syncers |-> self[2]]
         /\ pc = [self \in ProcSet |-> CASE self \in Servers -> "ServerStart"
                                         [] self \in Syncers -> "SyncStart"]
 
 ServerStart(self) == /\ pc[self] = "ServerStart"
-                     /\ broadcast' = (broadcast \union {self})
+                     /\ broadcast' =              [dc \in dcs |->
+                                       IF dc = serverid_[self]
+                                       THEN broadcast[dc]
+                                       ELSE Append(broadcast[dc], {3})
+                                     ]
                      /\ pc' = [pc EXCEPT ![self] = "Done"]
-                     /\ db' = db
+                     /\ UNCHANGED << dcs, db, serverid_, others, local, 
+                                     serverid >>
 
 server(self) == ServerStart(self)
 
 SyncStart(self) == /\ pc[self] = "SyncStart"
+                   /\ Len(broadcast[serverid[self]]) > 0
                    /\ pc' = [pc EXCEPT ![self] = "SyncStep"]
-                   /\ UNCHANGED << db, broadcast >>
+                   /\ UNCHANGED << dcs, db, broadcast, serverid_, others, 
+                                   local, serverid >>
 
 SyncStep(self) == /\ pc[self] = "SyncStep"
-                  /\ db' = [db EXCEPT ![self[2]] = db[self[2]] \union broadcast]
+                  /\ local' = [local EXCEPT ![self] = Head(broadcast[serverid[self]])]
+                  /\ broadcast' = [broadcast EXCEPT ![serverid[self]] = Tail(broadcast[serverid[self]])]
+                  /\ db' = [db EXCEPT ![serverid[self]] = Append(db[serverid[self]], local'[self])]
                   /\ pc' = [pc EXCEPT ![self] = "SyncStart"]
-                  /\ UNCHANGED broadcast
+                  /\ UNCHANGED << dcs, serverid_, others, serverid >>
 
 syncer(self) == SyncStart(self) \/ SyncStep(self)
 
@@ -75,5 +110,5 @@ Spec == /\ Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Mar 25 19:36:24 AEDT 2019 by xavier
+\* Last modified Wed Mar 27 14:46:09 AEDT 2019 by xavier
 \* Created Mon Mar 25 17:57:06 AEDT 2019 by xavier
