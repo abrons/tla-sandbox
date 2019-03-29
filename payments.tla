@@ -1,27 +1,40 @@
-A simplistic model of multi-datacenter redundancy for a pass-through payments processor. There are three actors in the system:
+A simplistic model of multi-datacenter redundancy for a pass-through payments
+processor. There are three actors in the system:
 
 1. A single client who wants to charge a card.
 2. A single processor who is able to charge the card.
-3. N redundant datacenters (DCs), one of which will be in the middle of the request, which presumably adds value in some way.
+3. N redundant datacenters (DCs), one of which will be in the middle of the
+   request, which presumably adds value in some way.
 
 A datacenter consists of an API processor and a background "sync" process.
 
 This model makes some reasonable assumptions:
+
 * The processor supports the following Auth/Capture semantics:
   * "Auth" reserves an amount to be captured.
   * "Capture" causes the actual debit of a previous "Auth".
-  * "Void" cancels a previous "Auth", or does nothing if no previous matching "Auth".
-* The client will retry against all DCs until it receives a successful response. (The exactly retry schedule is not relevant.)
-* Each datacenter is able to broadcast reliably to other datacenters with at-least-once semantics.
+  * "Void" cancels a previous "Auth", or does nothing if no previous matching
+    "Auth".
+* The client will retry against all DCs until it receives a successful
+  response. (The exactly retry schedule is not relevant.)
+* Each datacenter is able to broadcast reliably to other datacenters with
+  at-least-once semantics.
+* Processors within a datacenter are able to ensure at most one of them are
+  operating on an auth at any one time (e.g. via a lock service).
 
-It also makes some unreasonable ones. More work is required to specify these for a real world system:
+It also makes some unreasonable ones. More work is required to specify these
+for a real world system:
+
 * A datacenter can always successfully communicate with the processor.
 * A datacenter will always become available if it goes down.
-* A client will only send a single message to each datacenter. In practice, same-DC retries should be supported.
+* A client will only send a single message to each datacenter. In practice,
+  same-DC retries should be supported.
 
-(The first two would be a decent amount fo work, the latter should be a pretty straight forward TODO.)
+(The first two would be a decent amount fo work, the latter should be a pretty
+straight forward TODO.)
 
-Ultimately, we are trying to ensure that a client is able to send an "Auth" to multiple DCs without resulting in a duplicate charge.
+Ultimately, we are trying to ensure that a client is able to send an "Auth" to
+multiple DCs without resulting in a duplicate charge.
 
 ------------------------------ MODULE payments ------------------------------
 
@@ -171,12 +184,15 @@ begin SyncStart:
     await Len(broadcast[serverid]) > 0;
     SyncStep:
         HandleBroadcast(Head(broadcast[serverid]));
+    \* Simulate possible "double handling" of a broadcast message
     SyncMaybeRetry:
         either
           HandleBroadcast(Head(broadcast[serverid]));
         or
           skip;
         end either;
+        
+        \* Since we only have a single syncer per DC, it doesn't matter exactly when we mark this message as processed.
         broadcast[serverid] := Tail(broadcast[serverid]);
   end while;
 end process;
@@ -339,5 +355,5 @@ Spec == /\ Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Mar 29 11:39:33 AEDT 2019 by xavier
+\* Last modified Fri Mar 29 11:43:32 AEDT 2019 by xavier
 \* Created Mon Mar 25 17:57:06 AEDT 2019 by xavier
