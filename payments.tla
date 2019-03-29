@@ -21,14 +21,13 @@ This model makes some reasonable assumptions:
   at-least-once semantics.
 * Processors within a datacenter are able to ensure at most one of them are
   operating on an auth at any one time (e.g. via a lock service).
+* A client may send the same request multiple times to a server.
 
 It also makes some unreasonable ones. More work is required to specify these
 for a real world system:
 
 * A datacenter can always successfully communicate with the processor.
 * A datacenter will always become available if it goes down.
-* A client will only send a single message to each datacenter. In practice,
-  same-DC retries should be supported.
 
 (The first two would be a decent amount fo work, the latter should be a pretty
 straight forward TODO.)
@@ -169,6 +168,8 @@ begin ServerStart:
 
         HandleRequestLabel:
             HandleRequest(Head(msgs[serverid]));
+        HandleRequestLabelMaybeRetry:
+            HandleRequest(Head(msgs[serverid]));
 
         msgs[serverid] := Tail(msgs[serverid]);
 
@@ -302,13 +303,36 @@ HandleRequestLabel(self) == /\ pc[self] = "HandleRequestLabel"
                                                            THEN Append(broadcast[dc], (Head(msgs[serverid_[self]])))
                                                            ELSE broadcast[dc]
                                                        ]
-                            /\ msgs' = [msgs EXCEPT ![serverid_[self]] = Tail(msgs[serverid_[self]])]
-                            /\ Success' = TRUE
-                            /\ pc' = [pc EXCEPT ![self] = "ServerStart"]
-                            /\ UNCHANGED << id, token, homedc, others, 
-                                            serverid_, serverid >>
+                            /\ pc' = [pc EXCEPT ![self] = "HandleRequestLabelMaybeRetry"]
+                            /\ UNCHANGED << msgs, Success, id, token, homedc, 
+                                            others, serverid_, serverid >>
+
+HandleRequestLabelMaybeRetry(self) == /\ pc[self] = "HandleRequestLabelMaybeRetry"
+                                      /\ IF Len(SelectSeq(db[serverid_[self]], LAMBDA x : x.token = (Head(msgs[serverid_[self]])).token)) > 0
+                                            THEN /\ TRUE
+                                                 /\ UNCHANGED << db, broadcast, 
+                                                                 auths, 
+                                                                 captures >>
+                                            ELSE /\ auths' = (auths \union {(Head(msgs[serverid_[self]]))})
+                                                 /\ IF serverid_[self] \in (Head(msgs[serverid_[self]])).home
+                                                       THEN /\ captures' = (captures \union {(Head(msgs[serverid_[self]]))})
+                                                       ELSE /\ TRUE
+                                                            /\ UNCHANGED captures
+                                                 /\ db' = [db EXCEPT ![serverid_[self]] = Append(db[serverid_[self]], (Head(msgs[serverid_[self]])))]
+                                                 /\ broadcast' =              [dc \in Datacenters |->
+                                                                     IF dc \in (Head(msgs[serverid_[self]])).home /\ dc /= serverid_[self]
+                                                                     THEN Append(broadcast[dc], (Head(msgs[serverid_[self]])))
+                                                                     ELSE broadcast[dc]
+                                                                 ]
+                                      /\ msgs' = [msgs EXCEPT ![serverid_[self]] = Tail(msgs[serverid_[self]])]
+                                      /\ Success' = TRUE
+                                      /\ pc' = [pc EXCEPT ![self] = "ServerStart"]
+                                      /\ UNCHANGED << id, token, homedc, 
+                                                      others, serverid_, 
+                                                      serverid >>
 
 server(self) == ServerStart(self) \/ HandleRequestLabel(self)
+                   \/ HandleRequestLabelMaybeRetry(self)
 
 SyncStart(self) == /\ pc[self] = "SyncStart"
                    /\ Len(broadcast[serverid[self]]) > 0
@@ -357,5 +381,5 @@ Spec == /\ Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Mar 29 11:55:33 AEDT 2019 by xavier
+\* Last modified Fri Mar 29 11:59:07 AEDT 2019 by xavier
 \* Created Mon Mar 25 17:57:06 AEDT 2019 by xavier
