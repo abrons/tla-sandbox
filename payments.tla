@@ -108,8 +108,37 @@ begin
   end if;
 end macro;
 
-\* A client starts by sending a payment to an arbitrarily chosen "home" datacenter.
-\* It then retries to every other datacenter so long as it hasn't received a successful response.
+macro HandleRequest(local)
+begin
+    \* If we already have an auth for this token, then ignore
+    if Len(SelectSeq(db[serverid], LAMBDA x : x.token = local.token)) > 0 then
+        skip;
+    else
+        \* Auth it!
+        auths := auths \union {local};
+
+        if serverid \in local.home then
+            \* We own this auth, so capture it!
+            captures := captures \union {local};
+        else
+            skip;
+        end if;
+
+        \* Store locally (Only actually needed for this proof if home DC)
+        db[serverid] := Append(db[serverid], local);
+
+        \* Broadcast msg to home DCs (excluding self)
+        broadcast := [dc \in Datacenters |->
+            IF dc \in local.home /\ dc /= serverid
+            THEN Append(broadcast[dc], local)
+            ELSE broadcast[dc]
+        ];
+    end if;
+end macro;
+
+\* A client starts by sending a payment to an arbitrarily chosen "home"
+\* datacenter.  It then retries to every other datacenter so long as it hasn't
+\* received a successful response.
 fair process client = <<"client", 1>>
 variables
   id = 1,
@@ -136,70 +165,44 @@ variables
   serverid = self[2];
 begin ServerStart:
     while TRUE do
-      await Len(msgs[serverid]) > 0;
+        await Len(msgs[serverid]) > 0;
 
-      HandleRequest:
-      with local = Head(msgs[serverid]) do
-          \* If we already have an auth for this token, then ignore
-          if Len(SelectSeq(db[serverid], LAMBDA x : x.token = local.token)) > 0 then
-            skip;
-          else
-              \* Auth it!
-              auths := auths \union {local};
+        HandleRequestLabel:
+            HandleRequest(Head(msgs[serverid]));
 
-              if serverid \in local.home then
-                \* We own this auth, so capture it!
-                captures := captures \union {local};
-              else
-                skip;
-              end if;
+        msgs[serverid] := Tail(msgs[serverid]);
 
-              \* Store locally (Only actually needed for this proof if home DC)
-              db[serverid] := Append(db[serverid], local);
-
-              \* Broadcast msg to home DCs (excluding self)
-              broadcast := [dc \in Datacenters |->
-                  IF dc \in local.home /\ dc /= serverid
-                  THEN Append(broadcast[dc], local)
-                  ELSE broadcast[dc]
-              ];
-          end if;
-
-          msgs[serverid] := Tail(msgs[serverid]);
-      end with;
-
-      \* Tell client we succeeded
-      \* TODO: How to simulate response being dropped? Adding an either here or a label collapses model to a single state...
-      Success := TRUE;
-
+        \* Tell client we succeeded
+        \* TODO: How to simulate response being dropped? Adding an either here
+        \* or a label collapses model to a single state...
+        Success := TRUE;
     end while;
 end process;
-
 
 fair process syncer \in Syncers
 variables
   serverid = self[2];
 begin SyncStart:
-  while TRUE do
-    await Len(broadcast[serverid]) > 0;
-    SyncStep:
-        HandleBroadcast(Head(broadcast[serverid]));
-    \* Simulate possible "double handling" of a broadcast message
-    SyncMaybeRetry:
-        either
-          HandleBroadcast(Head(broadcast[serverid]));
-        or
-          skip;
-        end either;
-        
-        \* Since we only have a single syncer per DC, it doesn't matter exactly when we mark this message as processed.
-        broadcast[serverid] := Tail(broadcast[serverid]);
-  end while;
+    while TRUE do
+        await Len(broadcast[serverid]) > 0;
+        SyncStep:
+            HandleBroadcast(Head(broadcast[serverid]));
+        \* Simulate possible "double handling" of a broadcast message
+        SyncMaybeRetry:
+            either
+                HandleBroadcast(Head(broadcast[serverid]));
+            or
+                skip;
+            end either;
+
+            \* Since we only have a single syncer per DC, it doesn't matter exactly when we mark this message as processed.
+            broadcast[serverid] := Tail(broadcast[serverid]);
+    end while;
 end process;
 
 end algorithm--*)
 \* BEGIN TRANSLATION
-\* Process variable serverid of process server at line 123 col 3 changed to serverid_
+\* Process variable serverid of process server at line 165 col 3 changed to serverid_
 VARIABLES db, msgs, broadcast, auths, captures, Success, pc
 
 (* define statement *)
@@ -278,35 +281,34 @@ client == InitialAuth \/ RetryLoop \/ Retry
 
 ServerStart(self) == /\ pc[self] = "ServerStart"
                      /\ Len(msgs[serverid_[self]]) > 0
-                     /\ pc' = [pc EXCEPT ![self] = "HandleRequest"]
+                     /\ pc' = [pc EXCEPT ![self] = "HandleRequestLabel"]
                      /\ UNCHANGED << db, msgs, broadcast, auths, captures, 
                                      Success, id, token, homedc, others, 
                                      serverid_, serverid >>
 
-HandleRequest(self) == /\ pc[self] = "HandleRequest"
-                       /\ LET local == Head(msgs[serverid_[self]]) IN
-                            /\ IF Len(SelectSeq(db[serverid_[self]], LAMBDA x : x.token = local.token)) > 0
+HandleRequestLabel(self) == /\ pc[self] = "HandleRequestLabel"
+                            /\ IF Len(SelectSeq(db[serverid_[self]], LAMBDA x : x.token = (Head(msgs[serverid_[self]])).token)) > 0
                                   THEN /\ TRUE
                                        /\ UNCHANGED << db, broadcast, auths, 
                                                        captures >>
-                                  ELSE /\ auths' = (auths \union {local})
-                                       /\ IF serverid_[self] \in local.home
-                                             THEN /\ captures' = (captures \union {local})
+                                  ELSE /\ auths' = (auths \union {(Head(msgs[serverid_[self]]))})
+                                       /\ IF serverid_[self] \in (Head(msgs[serverid_[self]])).home
+                                             THEN /\ captures' = (captures \union {(Head(msgs[serverid_[self]]))})
                                              ELSE /\ TRUE
                                                   /\ UNCHANGED captures
-                                       /\ db' = [db EXCEPT ![serverid_[self]] = Append(db[serverid_[self]], local)]
+                                       /\ db' = [db EXCEPT ![serverid_[self]] = Append(db[serverid_[self]], (Head(msgs[serverid_[self]])))]
                                        /\ broadcast' =              [dc \in Datacenters |->
-                                                           IF dc \in local.home /\ dc /= serverid_[self]
-                                                           THEN Append(broadcast[dc], local)
+                                                           IF dc \in (Head(msgs[serverid_[self]])).home /\ dc /= serverid_[self]
+                                                           THEN Append(broadcast[dc], (Head(msgs[serverid_[self]])))
                                                            ELSE broadcast[dc]
                                                        ]
                             /\ msgs' = [msgs EXCEPT ![serverid_[self]] = Tail(msgs[serverid_[self]])]
-                       /\ Success' = TRUE
-                       /\ pc' = [pc EXCEPT ![self] = "ServerStart"]
-                       /\ UNCHANGED << id, token, homedc, others, serverid_, 
-                                       serverid >>
+                            /\ Success' = TRUE
+                            /\ pc' = [pc EXCEPT ![self] = "ServerStart"]
+                            /\ UNCHANGED << id, token, homedc, others, 
+                                            serverid_, serverid >>
 
-server(self) == ServerStart(self) \/ HandleRequest(self)
+server(self) == ServerStart(self) \/ HandleRequestLabel(self)
 
 SyncStart(self) == /\ pc[self] = "SyncStart"
                    /\ Len(broadcast[serverid[self]]) > 0
@@ -355,5 +357,5 @@ Spec == /\ Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Mar 29 11:43:32 AEDT 2019 by xavier
+\* Last modified Fri Mar 29 11:55:33 AEDT 2019 by xavier
 \* Created Mon Mar 25 17:57:06 AEDT 2019 by xavier
